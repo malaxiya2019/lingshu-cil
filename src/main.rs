@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod context;
 mod logging;
+mod mcp;
 mod model;
 
 use anyhow::Result;
@@ -17,6 +18,44 @@ use app::App;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+
+    // ── MCP Server Mode ──
+    if args.len() > 1 && (args[1] == "--mcp" || args[1] == "mcp") {
+        eprintln!("[lingshu-cil] Starting MCP server on stdio transport...");
+        eprintln!("[lingshu-cil] Resources: deepseek://models, deepseek://config, deepseek://usage");
+        let server = mcp::McpServer::new();
+        return server.run();
+    }
+
+    // ── Print version info ──
+    if args.len() > 1 && (args[1] == "--version" || args[1] == "-v") {
+        println!("lingshu-cil v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    // ── Print usage ──
+    if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
+        println!("LingShu CIL v{}", env!("CARGO_PKG_VERSION"));
+        println!();
+        println!("USAGE:");
+        println!("  lingshu-cil [directory]        Start TUI in the given directory");
+        println!("  lingshu-cil --mcp               Start MCP server on stdio transport");
+        println!("  lingshu-cil --version / -v      Print version");
+        println!("  lingshu-cil --help / -h         Print this help");
+        println!();
+        println!("MCP RESOURCES:");
+        println!("  deepseek://models   Model catalog with V3.2 pricing");
+        println!("  deepseek://config   Server configuration (masked)");
+        println!("  deepseek://usage    Real-time usage & session metrics");
+        println!();
+        println!("ENVIRONMENT:");
+        println!("  DEEPSEEK_API_KEY    API key for DeepSeek models");
+        println!("  OPENAI_API_KEY      API key for OpenAI models");
+        println!("  ANTHROPIC_API_KEY   API key for Anthropic models");
+        return Ok(());
+    }
+
+    // ── TUI Mode (default) ──
     let workspace = if args.len() > 1 {
         PathBuf::from(&args[1])
     } else {

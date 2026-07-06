@@ -2,7 +2,7 @@
 name = "lingshu-cil"
 version = "0.2.1-ds"
 edition = "2021"
-description = "LingShu CIL - Context-aware Interactive LLM assistant for the terminal"
+description = "LingShu CIL - Context-aware Interactive LLM assistant + MCP metadata server"
 
 [dependencies]
 # TUI framework

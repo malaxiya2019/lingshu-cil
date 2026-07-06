@@ -10,6 +10,19 @@ pub struct ModelConfig {
     pub api_key: Option<String>,
     pub max_tokens: u32,
     pub temperature: f32,
+    /// DeepSeek V3.2 context window (128K)
+    pub context_window: u32,
+    /// Whether thinking mode is required/optional/unsupported
+    pub thinking_mode: String,
+    /// V3.2 cache-aware pricing
+    pub pricing: ModelPricing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPricing {
+    pub input_per_1m_tokens: f64,
+    pub cache_hit_per_1m_tokens: f64,
+    pub output_per_1m_tokens: f64,
 }
 
 impl ModelConfig {
@@ -23,6 +36,29 @@ impl ModelConfig {
                 api_key: std::env::var("DEEPSEEK_API_KEY").ok(),
                 max_tokens: 8192,
                 temperature: 0.7,
+                context_window: 128000,
+                thinking_mode: "optional".into(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 0.28,
+                    cache_hit_per_1m_tokens: 0.028,
+                    output_per_1m_tokens: 0.42,
+                },
+            },
+            ModelConfig {
+                name: "deepseek-reasoner".into(),
+                display_name: "DeepSeek Reasoner".into(),
+                provider: "deepseek".into(),
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: std::env::var("DEEPSEEK_API_KEY").ok(),
+                max_tokens: 65536,
+                temperature: 0.2,
+                context_window: 128000,
+                thinking_mode: "required".into(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 0.28,
+                    cache_hit_per_1m_tokens: 0.028,
+                    output_per_1m_tokens: 0.42,
+                },
             },
             ModelConfig {
                 name: "deepseek-coder".into(),
@@ -32,6 +68,13 @@ impl ModelConfig {
                 api_key: std::env::var("DEEPSEEK_API_KEY").ok(),
                 max_tokens: 8192,
                 temperature: 0.2,
+                context_window: 128000,
+                thinking_mode: "optional".into(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 0.28,
+                    cache_hit_per_1m_tokens: 0.028,
+                    output_per_1m_tokens: 0.42,
+                },
             },
             ModelConfig {
                 name: "gpt-4o".into(),
@@ -41,6 +84,13 @@ impl ModelConfig {
                 api_key: std::env::var("OPENAI_API_KEY").ok(),
                 max_tokens: 16384,
                 temperature: 0.7,
+                context_window: 128000,
+                thinking_mode: "unsupported".into(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 2.50,
+                    cache_hit_per_1m_tokens: 1.25,
+                    output_per_1m_tokens: 10.00,
+                },
             },
             ModelConfig {
                 name: "claude-3-sonnet".into(),
@@ -50,6 +100,13 @@ impl ModelConfig {
                 api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
                 max_tokens: 8192,
                 temperature: 0.5,
+                context_window: 200000,
+                thinking_mode: "unsupported".into(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 3.00,
+                    cache_hit_per_1m_tokens: 0.30,
+                    output_per_1m_tokens: 15.00,
+                },
             },
         ]
     }
@@ -57,18 +114,23 @@ impl ModelConfig {
 
 impl fmt::Display for ModelConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.display_name, self.name)
+        write!(
+            f,
+            "{} ({}) · ctx: {} · thinking: {} · ${:.2}/1M in",
+            self.display_name,
+            self.name,
+            self.context_window,
+            self.thinking_mode,
+            self.pricing.input_per_1m_tokens,
+        )
     }
 }
 
 /// Permission modes for the CIL agent
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
-    /// Read-only context awareness
     FullContext,
-    /// Allow read + suggest commands
     SuggestOnly,
-    /// Full autonomy - allow executing commands
     Yolo,
 }
 
@@ -128,7 +190,7 @@ impl Message {
     }
 }
 
-/// Response from the LLM API (streaming chunk)
+/// Stream response from LLM API
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
