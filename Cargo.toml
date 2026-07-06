@@ -1,0 +1,23 @@
+[package]
+name = "lingshu-cil"
+version = "0.2.1-ds"
+edition = "2021"
+description = "LingShu CIL - Context-aware Interactive LLM assistant for the terminal"
+
+[dependencies]
+# TUI framework
+ratatui = { version = "0.29", features = ["all-widgets"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+chrono = "0.4"
+anyhow = "1"
+walkdir = "2"
+dirs = "5"
+
+# Fuzzy finder for context
+fuzzy-matcher = "0.3"
