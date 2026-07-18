@@ -1,6 +1,8 @@
 mod app;
 mod commands;
 mod context;
+mod llm;
+mod markdown;
 mod logging;
 mod mcp;
 mod model;
@@ -52,6 +54,9 @@ fn main() -> Result<()> {
         println!("  DEEPSEEK_API_KEY    API key for DeepSeek models");
         println!("  OPENAI_API_KEY      API key for OpenAI models");
         println!("  ANTHROPIC_API_KEY   API key for Anthropic models");
+        println!("  QWEN_API_KEY        API key for Qwen (DashScope) models");
+        println!("  GEMINI_API_KEY      API key for Gemini models");
+        println!("  MOONSHOT_API_KEY    API key for Moonshot models");
         return Ok(());
     }
 
@@ -94,8 +99,12 @@ fn run_tui(workspace: PathBuf) -> Result<()> {
             match event::read()? {
                 Event::Key(key) => {
                     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
-                        app.should_exit = true;
-                        break;
+                        if app.is_streaming {
+                            app.cancel_streaming("interrupted by user");
+                        } else {
+                            app.should_exit = true;
+                            break;
+                        }
                     }
                     app.handle_key_event(key)?;
                 }
@@ -106,6 +115,9 @@ fn run_tui(workspace: PathBuf) -> Result<()> {
                 _ => {}
             }
         }
+
+        // Check for streaming updates
+        app.poll_stream();
 
         if last_tick.elapsed() >= Duration::from_secs(5) {
             app.advance_tip();

@@ -12,6 +12,8 @@ pub enum SlashCommand {
     Context,
     Tree,
     Clear,
+    Save,
+    Load(String),
     Exit,
     Env,
     Status,
@@ -37,6 +39,8 @@ impl SlashCommand {
             "/context" | "/ctx" => SlashCommand::Context,
             "/tree" | "/ls" => SlashCommand::Tree,
             "/clear" | "/cls" => SlashCommand::Clear,
+            "/save" | "/export" => SlashCommand::Save,
+            "/load" | "/import" => SlashCommand::Load(arg.to_string()),
             "/exit" | "/quit" | "/q" => SlashCommand::Exit,
             "/env" => SlashCommand::Env,
             "/status" => SlashCommand::Status,
@@ -57,6 +61,8 @@ impl SlashCommand {
 ║ /context /ctx   Show workspace context   ║
 ║ /tree  /ls      Show file tree          ║
 ║ /clear /cls     Clear conversation      ║
+║ /save  /export  Export conversation     ║
+║ /load  /import  Import conversation     ║
 ║ /status         Show current status     ║
 ║ /env            Show environment info   ║
 ║ /exit  /quit /q Exit CIL                ║
@@ -86,7 +92,7 @@ impl SlashCommand {
                     Ok(Some(format!("✓ Set custom model: {}", name)))
                 } else {
                     Ok(Some(format!(
-                        "✗ Unknown model: {}\nAvailable: deepseek-chat, deepseek-coder, gpt-4o, claude-3-sonnet",
+                        "✗ Unknown model: {}\nAvailable: deepseek-chat, deepseek-coder, qwen-plus, qwen-turbo, gpt-4o, claude-3-sonnet, gemini-2.0-flash, gemini-2.5-pro, moonshot-v1, moonshot-v1-32k",
                         name
                     )))
                 }
@@ -167,6 +173,26 @@ impl SlashCommand {
                 app.scroll_offset = 0;
                 app.logger.info("system", "Conversation cleared");
                 Ok(Some("Conversation cleared.".to_string()))
+            }
+
+            SlashCommand::Save => {
+                let path = app.export_conversation();
+                match path {
+                    Ok(p) => Ok(Some(format!("✓ Conversation saved to: {}", p))),
+                    Err(e) => Ok(Some(format!("✗ Failed to save: {}", e))),
+                }
+            }
+
+            SlashCommand::Load(path_arg) => {
+                let path = if path_arg.is_empty() {
+                    app.import_conversation()
+                } else {
+                    app.import_conversation_from(&path_arg)
+                };
+                match path {
+                    Ok(count) => Ok(Some(format!("✓ Loaded {} messages from conversation.", count))),
+                    Err(e) => Ok(Some(format!("✗ Failed to load: {}", e))),
+                }
             }
 
             SlashCommand::Exit => {

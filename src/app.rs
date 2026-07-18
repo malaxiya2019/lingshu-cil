@@ -1,7 +1,9 @@
 use ratatui::prelude::Stylize;
 use crate::commands::SlashCommand;
 use crate::context::ContextEngine;
+use crate::llm::{self, ChatMessage, StreamEvent};
 use crate::logging::Logger;
+use crate::markdown;
 use crate::model::{Message, ModelConfig, PermissionMode};
 
 use anyhow::Result;
@@ -12,6 +14,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
 const TIPS: &[&str] = &[
     "Tip: Use /model <name> to switch AI models",
@@ -20,6 +23,8 @@ const TIPS: &[&str] = &[
     "Tip: Use /tree to see workspace file tree",
     "Tip: Use /help for all available commands",
     "Tip: Tab-complete file paths in /dir commands",
+    "Tip: Use /model to list all available models",
+    "Tip: Set DEEPSEEK_API_KEY for real AI responses",
     "Tip: Pipe output with 2> cil.log for logging",
 ];
 
@@ -52,6 +57,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub is_streaming: bool,
     pub stream_buffer: String,
+    pub stream_rx: Option<Receiver<StreamEvent>>,
     pub tip_index: usize,
     pub input_history: Vec<String>,
     pub history_pos: Option<usize>,
@@ -77,6 +83,7 @@ impl App {
             scroll_offset: 0,
             is_streaming: false,
             stream_buffer: String::new(),
+            stream_rx: None,
             tip_index: 0,
             input_history: Vec::new(),
             history_pos: None,
@@ -88,7 +95,7 @@ impl App {
             app.messages.push(Message::new(
                 "system",
                 &format!(
-                    "LingShu CIL v0.2.1-ds ready.\n📁 Workspace: {}\n📄 {} files | {} lines\n🤖 Model: {} | Mode: {}",
+                    "LingShu CIL v0.2.2 ready.\n📁 Workspace: {}\n📄 {} files | {} lines\n🤖 Model: {} | Mode: {}",
                     c.working_dir.display(),
                     c.files.len(),
                     c.total_lines,
@@ -97,6 +104,19 @@ impl App {
                 ),
             ));
             app.logger.info("system", &c.summary);
+        }
+
+        // Check if API keys are set
+        let has_deepseek = std::env::var("DEEPSEEK_API_KEY").is_ok();
+        let has_openai = std::env::var("OPENAI_API_KEY").is_ok();
+        let has_qwen = std::env::var("QWEN_API_KEY").is_ok();
+        let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok();
+
+        if !has_deepseek && !has_openai && !has_qwen && !has_anthropic {
+            app.messages.push(Message::new(
+                "system",
+                "⚠️  No API keys found. Set DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, or ANTHROPIC_API_KEY for real AI responses. Falling back to simulated mode.",
+            ));
         }
 
         Ok(app)
@@ -131,11 +151,47 @@ impl App {
             self.stream_buffer.clear();
 
             let ctx_prompt = self.context_engine.build_context_prompt(&input);
-            let response = self.generate_response(&input, &ctx_prompt);
+            let ctx_summary = self.context_engine.scan_workspace()
+                .map(|c| c.summary.clone())
+                .unwrap_or_default();
 
-            self.messages.push(Message::new("assistant", &response));
-            self.is_streaming = false;
-            self.logger.info("assistant", &response);
+            let has_api_key = self.config.current_model.api_key.is_some();
+
+            if has_api_key {
+                // Real API call
+                let mut chat_messages: Vec<ChatMessage> = Vec::new();
+                chat_messages.push(ChatMessage::new(
+                    "system",
+                    &format!("{}\n\n{}", llm::build_system_prompt(&ctx_summary), ctx_prompt),
+                ));
+
+                // Add conversation history (last 10 messages for context)
+                for msg in self.messages.iter().rev().take(10).rev() {
+                    if msg.is_user() || msg.is_assistant() {
+                        chat_messages.push(ChatMessage::new(&msg.role, &msg.content));
+                    }
+                }
+
+                match llm::chat_stream(&self.config.current_model, &chat_messages, None) {
+                    Ok(rx) => {
+                        self.stream_rx = Some(rx);
+                    }
+                    Err(e) => {
+                        self.messages.push(Message::new(
+                            "system",
+                            &format!("⚠️  LLM error: {}", e),
+                        ));
+                        self.is_streaming = false;
+                    }
+                }
+            } else {
+                // Fallback to simulated response
+                let response = self.simulate_response(&input, &ctx_prompt);
+                self.stream_buffer = response.clone();
+                self.messages.push(Message::new("assistant", &response));
+                self.is_streaming = false;
+                self.logger.info("assistant", &response);
+            }
         }
 
         self.input.clear();
@@ -145,20 +201,240 @@ impl App {
         Ok(())
     }
 
-    fn generate_response(&mut self, query: &str, _ctx_prompt: &str) -> String {
-        let ctx = self.context_engine.scan_workspace().ok();
-        let file_count = ctx.as_ref().map(|c| c.files.len()).unwrap_or(0);
+    /// Poll the streaming receiver for new chunks
+    pub fn poll_stream(&mut self) {
+        if !self.is_streaming {
+            return;
+        }
+
+        let rx = match &self.stream_rx {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Try to receive without blocking
+        loop {
+            match rx.try_recv() {
+                Ok(StreamEvent::Chunk(chunk)) => {
+                    self.stream_buffer.push_str(&chunk);
+                }
+                Ok(StreamEvent::Done) => {
+                    // Finalize the streaming message
+                    let final_content = self.stream_buffer.clone();
+                    if !final_content.is_empty() {
+                        self.messages.push(Message::new("assistant", &final_content));
+                        self.logger.info("assistant", &final_content);
+                    }
+                    self.is_streaming = false;
+                    self.stream_buffer.clear();
+                    self.stream_rx = None;
+                    break;
+                }
+                Ok(StreamEvent::Error(err)) => {
+                    let final_content = if self.stream_buffer.is_empty() {
+                        format!("⚠️  Error: {}", err)
+                    } else {
+                        // Append error to partial response
+                        format!("{}\n\n⚠️  Error: {}", self.stream_buffer, err)
+                    };
+                    self.messages.push(Message::new("assistant", &final_content));
+                    self.logger.error("llm", &err);
+                    self.is_streaming = false;
+                    self.stream_buffer.clear();
+                    self.stream_rx = None;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    break; // No data yet, come back later
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Channel closed, finalize whatever we have
+                    if !self.stream_buffer.is_empty() {
+                        self.messages.push(Message::new("assistant", &self.stream_buffer));
+                        self.logger.info("assistant", &self.stream_buffer);
+                    }
+                    self.is_streaming = false;
+                    self.stream_buffer.clear();
+                    self.stream_rx = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Cancel the current streaming (on Ctrl+C)
+    pub fn cancel_streaming(&mut self, reason: &str) {
+        if !self.is_streaming {
+            return;
+        }
+
+        let partial = if self.stream_buffer.is_empty() {
+            format!("
+
+_[{}]_", reason)
+        } else {
+            format!("{}
+
+_[{}]_", self.stream_buffer, reason)
+        };
+
+        self.messages.push(Message::new("assistant", &partial));
+        self.logger.info("assistant", &format!("[cancelled: {}]", reason));
+
+        self.is_streaming = false;
+        self.stream_buffer.clear();
+        self.stream_rx = None;
+    }
+
+    /// Export conversation to a JSON file
+    pub fn export_conversation(&self) -> Result<String, String> {
+        let conv_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("lingshu")
+            .join("conversations");
+        std::fs::create_dir_all(&conv_dir).map_err(|e| format!("Failed to create dir: {}", e))?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("conversation_{}.json", timestamp);
+        let path = conv_dir.join(&filename);
+
+        #[derive(serde::Serialize)]
+        struct Export {
+            version: String,
+            exported_at: String,
+            model: String,
+            messages: Vec<Message>,
+        }
+
+        let export = Export {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            exported_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            model: self.config.current_model.name.clone(),
+            messages: self.messages.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&export)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        std::fs::write(&path, &json).map_err(|e| format!("Write error: {}", e))?;
+
+        Ok(path.display().to_string())
+    }
+
+    /// Import conversation from a specific file path
+    pub fn import_conversation_from(&mut self, path_str: &str) -> Result<usize, String> {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            return Err(format!("File not found: {}", path_str));
+        }
+        let json = std::fs::read_to_string(&path).map_err(|e| format!("Read error: {}", e))?;
+
+        #[derive(serde::Deserialize)]
+        struct Export {
+            version: Option<String>,
+            exported_at: Option<String>,
+            model: Option<String>,
+            messages: Vec<Message>,
+        }
+
+        let export: Export =
+            serde_json::from_str(&json).map_err(|e| format!("Parse error: {}", e))?;
+
+        let count = export.messages.len();
+        self.messages = export.messages;
+
+        if let Some(model) = export.model {
+            let builtins = crate::model::ModelConfig::builtins();
+            if let Some(m) = builtins.into_iter().find(|m| m.name == model) {
+                self.config.current_model = m;
+            }
+        }
+
+        self.logger.info(
+            "system",
+            &format!("Loaded {} messages from {}", count, path.display()),
+        );
+
+        Ok(count)
+    }
+
+    /// Import conversation from a JSON file
+    pub fn import_conversation(&mut self) -> Result<usize, String> {
+        let conv_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("lingshu")
+            .join("conversations");
+
+        if !conv_dir.exists() {
+            return Err("No conversations directory found.".to_string());
+        }
+
+        // Find the most recent .json file
+        let entries = std::fs::read_dir(&conv_dir).map_err(|e| format!("Read dir error: {}", e))?;
+        let mut json_files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+            })
+            .collect();
+
+        if json_files.is_empty() {
+            return Err("No conversation files found.".to_string());
+        }
+
+        // Sort by modification time (newest first)
+        json_files.sort_by(|a, b| {
+            b.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                .cmp(
+                    &a.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                )
+        });
+
+        let path = json_files[0].path();
+        let json = std::fs::read_to_string(&path).map_err(|e| format!("Read error: {}", e))?;
+
+        #[derive(serde::Deserialize)]
+        struct Export {
+            version: Option<String>,
+            exported_at: Option<String>,
+            model: Option<String>,
+            messages: Vec<Message>,
+        }
+
+        let export: Export =
+            serde_json::from_str(&json).map_err(|e| format!("Parse error: {}", e))?;
+
+        let count = export.messages.len();
+        self.messages = export.messages;
+
+        if let Some(model) = export.model {
+            // Try to switch to the same model
+            let builtins = crate::model::ModelConfig::builtins();
+            if let Some(m) = builtins.into_iter().find(|m| m.name == model) {
+                self.config.current_model = m;
+            }
+        }
+
+        self.logger.info(
+            "system",
+            &format!("Loaded {} messages from {}", count, path.display()),
+        );
+
+        Ok(count)
+    }
+
+    fn simulate_response(&mut self, query: &str, _ctx_prompt: &str) -> String {
         let model_name = &self.config.current_model.name;
         let mode = self.config.permission_mode.as_str();
+        let ctx = self.context_engine.scan_workspace().ok();
+        let file_count = ctx.as_ref().map(|c| c.files.len()).unwrap_or(0);
 
-        let mut response = String::new();
+        let mut response = format!("🤖 **{}** (Mode: {})\n\n", model_name, mode);
 
         if file_count > 0 {
-            response.push_str(&format!(
-                "🤖 **{}** (Mode: {})\n\n",
-                model_name, mode
-            ));
-
             if query.contains("file") || query.contains("code") || query.contains("struct") {
                 response.push_str("I've scanned your workspace. Here's what I found:\n\n");
                 if let Some(c) = &ctx {
@@ -179,25 +455,25 @@ impl App {
                 response.push_str(&format!(
                     "Context: {} files scanned in workspace.\n\n{}",
                     file_count,
-                    self.simulate_reasoning(query)
+                    self.mock_reasoning(query)
                 ));
             }
         } else {
-            response.push_str(&format!(
-                "🤖 **{}** (Mode: {})\n\n{}",
-                model_name,
-                mode,
-                self.simulate_reasoning(query)
-            ));
+            response.push_str(&self.mock_reasoning(query));
+        }
+
+        if response.len() > 2000 {
+            response.truncate(1997);
+            response.push_str("...");
         }
 
         response
     }
 
-    fn simulate_reasoning(&self, query: &str) -> String {
+    fn mock_reasoning(&self, query: &str) -> String {
         let lower = query.to_lowercase();
         if lower.contains("hello") || lower.contains("hi") || lower.contains("你好") {
-            return "Hello! I'm LingShu CIL, your context-aware AI assistant.\n\nI'm currently connected to your workspace. Try asking me questions about your code, or use /help to see what I can do.".to_string();
+            return "Hello! I'm LingShu CIL, your context-aware AI assistant.\n\nI'm currently connected to your workspace. Try asking me questions about your code, or use /help to see what I can do.\n\n💡 **Tip:** Set `DEEPSEEK_API_KEY` in your environment for real AI-powered responses!".to_string();
         }
         if lower.contains("docker") || lower.contains("dockerfile") {
             return "**Dockerfile Optimization Tips:**\n\n1. Use multi-stage builds to reduce image size\n2. Combine `RUN` commands to minimize layers\n3. Use `.dockerignore` to exclude unnecessary files\n4. Pin base image versions for reproducibility\n5. Use `--no-cache` for package managers\n\nI can analyze your specific Dockerfile if you reference it!".to_string();
@@ -210,13 +486,17 @@ impl App {
         }
 
         format!(
-            "I understand your query: \"{}\"\n\nI'm a context-aware terminal AI assistant. I can:\n- Analyze your codebase\n- Answer questions about your project\n- Help with debugging and optimization\n- Provide security insights\n\nTry `/model deepseek-chat` to switch models, or `/dir <path>` to scan a different directory.",
+            "I understand your query: \"{}\"\n\nI'm a context-aware terminal AI assistant. I can:\n- Analyze your codebase\n- Answer questions about your project\n- Help with debugging and optimization\n- Provide security insights\n\nSet `DEEPSEEK_API_KEY` in your environment and I'll use real AI models!\n\nTry `/model deepseek-chat` to switch models, or `/dir <path>` to scan a different directory.",
             query
         )
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         if self.is_streaming {
+            // During streaming, only allow Ctrl+C to cancel
+            if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
+                self.cancel_streaming("interrupted by user");
+            }
             return Ok(());
         }
 
@@ -412,7 +692,7 @@ impl App {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" (v0.2.1-ds) ", Style::default().fg(Color::Gray)),
+                Span::styled(" (v0.2.2) ", Style::default().fg(Color::Gray)),
                 Span::styled("│", Style::default().fg(Color::Cyan)),
                 Span::raw(" "),
                 Span::styled("model:", Style::default().fg(Color::Gray)),
@@ -462,35 +742,76 @@ impl App {
         let mut lines = Vec::new();
 
         for msg in &self.messages {
-            let style = if msg.is_user() {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else if msg.is_system() {
-                Style::default().fg(Color::DarkGray).italic()
-            } else {
-                Style::default().fg(Color::White)
-            };
-
+            let prefix_style = Style::default().fg(Color::DarkGray);
             let prefix = if msg.is_user() { "› " }
             else if msg.is_system() { "· " }
             else { "  " };
 
+            // Timestamp line for each message
+            let role_label = if msg.is_user() {
+                Span::styled("You", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            } else if msg.is_system() {
+                Span::styled("System", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::styled("CIL", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            };
+
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{}[{}] ", prefix, msg.timestamp),
-                    Style::default().fg(Color::DarkGray),
+                    prefix_style,
                 ),
-                if msg.is_user() {
-                    Span::styled("You: ", Style::default().fg(Color::Cyan))
-                } else {
-                    Span::styled("", Style::default())
-                },
-                Span::styled(msg.content.clone(), style),
+                role_label,
             ]));
 
-            lines.push(Line::from(""));
+            // Render message content with markdown (only for assistant messages)
+            if msg.is_assistant() {
+                let blocks = markdown::render_markdown(&msg.content);
+                let rendered = markdown::blocks_to_lines(&blocks);
+                for rline in rendered {
+                    // Indent content
+                    let mut indented = vec![Span::raw("   ")];
+                    indented.extend(rline.spans.into_iter().map(|s| {
+                        Span::styled(s.content, s.style)
+                    }));
+                    lines.push(Line::from(indented));
+                }
+            } else {
+                // User/system messages: plain text
+                for content_line in msg.content.lines() {
+                    let style = if msg.is_user() {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray).italic()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(content_line.to_string(), style),
+                    ]));
+                }
+            }
+
+            lines.push(Line::from("")); // spacing between messages
         }
 
-        if self.is_streaming {
+        // Show streaming buffer as it arrives (with markdown preview)
+        if self.is_streaming && !self.stream_buffer.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  [", Style::default().fg(Color::DarkGray)),
+                Span::styled("streaming", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled("]", Style::default().fg(Color::DarkGray)),
+            ]));
+            // Show first few lines of live stream
+            for line_text in self.stream_buffer.lines().take(8) {
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(line_text.to_string(), Style::default().fg(Color::Green)),
+                ]));
+            }
+            lines.push(Line::from(vec![
+                Span::styled("   ▊", Style::default().fg(Color::Green).add_modifier(Modifier::SLOW_BLINK)),
+            ]));
+        } else if self.is_streaming {
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(
@@ -500,6 +821,7 @@ impl App {
             ]));
         }
 
+        // Scroll indicator
         if self.scroll_offset > 0 {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
@@ -560,6 +882,7 @@ impl App {
         let mode = self.config.permission_mode;
         let msg_count = self.messages.len();
         let log_path = self.log_path.clone();
+        let streaming = self.is_streaming;
 
         let mode_style = if mode == PermissionMode::Yolo {
             Style::default().fg(Color::Red)
@@ -567,7 +890,7 @@ impl App {
             Style::default().fg(Color::Blue)
         };
 
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(model, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::raw(" active · "),
             Span::styled(dir, Style::default().fg(Color::Yellow)),
@@ -578,6 +901,14 @@ impl App {
             Span::raw(" · "),
             Span::styled(log_path, Style::default().fg(Color::DarkGray)),
         ];
+
+        if streaming {
+            spans.push(Span::raw(" · "));
+            spans.push(Span::styled(
+                "● streaming",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+        }
 
         Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::Black))

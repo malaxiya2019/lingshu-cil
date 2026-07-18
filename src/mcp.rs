@@ -267,7 +267,7 @@ impl SessionManager {
     }
 
     fn evict_expired(&mut self) {
-        let now = Instant::now();
+        let _now = Instant::now();
         // We use created_at as proxy; in real impl track Instant per session
         self.sessions.retain(|_, s| {
             let created =
@@ -395,6 +395,21 @@ fn model_catalog() -> Value {
                 }
             },
             {
+                "id": "deepseek-coder",
+                "description": "DeepSeek Coder - Specialized for code generation and completion",
+                "context_window": 128000,
+                "max_output_tokens": 8192,
+                "default_output_tokens": 4096,
+                "thinking_mode": "optional",
+                "supports_json_mode": true,
+                "supports_function_calling": true,
+                "pricing": {
+                    "input_per_1m_tokens": 0.28,
+                    "cache_hit_per_1m_tokens": 0.028,
+                    "output_per_1m_tokens": 0.42
+                }
+            },
+            {
                 "id": "deepseek-reasoner",
                 "description": "DeepSeek V3.2 - Reasoning model for complex logical tasks",
                 "context_window": 128000,
@@ -407,6 +422,66 @@ fn model_catalog() -> Value {
                     "input_per_1m_tokens": 0.28,
                     "cache_hit_per_1m_tokens": 0.028,
                     "output_per_1m_tokens": 0.42
+                }
+            },
+            {
+                "id": "gpt-4o",
+                "description": "OpenAI GPT-4o - Multimodal general purpose model",
+                "context_window": 128000,
+                "max_output_tokens": 16384,
+                "default_output_tokens": 4096,
+                "thinking_mode": "unsupported",
+                "supports_json_mode": true,
+                "supports_function_calling": true,
+                "pricing": {
+                    "input_per_1m_tokens": 2.50,
+                    "cache_hit_per_1m_tokens": 1.25,
+                    "output_per_1m_tokens": 10.00
+                }
+            },
+            {
+                "id": "qwen-plus",
+                "description": "Qwen Plus - Balanced performance and cost",
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+                "default_output_tokens": 4096,
+                "thinking_mode": "unsupported",
+                "supports_json_mode": true,
+                "supports_function_calling": true,
+                "pricing": {
+                    "input_per_1m_tokens": 0.80,
+                    "cache_hit_per_1m_tokens": 0.00,
+                    "output_per_1m_tokens": 2.00
+                }
+            },
+            {
+                "id": "gemini-2.0-flash",
+                "description": "Google Gemini 2.0 Flash - Fast and cost-effective",
+                "context_window": 1048576,
+                "max_output_tokens": 8192,
+                "default_output_tokens": 4096,
+                "thinking_mode": "unsupported",
+                "supports_json_mode": true,
+                "supports_function_calling": true,
+                "pricing": {
+                    "input_per_1m_tokens": 0.10,
+                    "cache_hit_per_1m_tokens": 0.025,
+                    "output_per_1m_tokens": 0.40
+                }
+            },
+            {
+                "id": "moonshot-v1",
+                "description": "Moonshot V1 - Long context window Chinese-optimized model",
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+                "default_output_tokens": 4096,
+                "thinking_mode": "unsupported",
+                "supports_json_mode": true,
+                "supports_function_calling": true,
+                "pricing": {
+                    "input_per_1m_tokens": 1.00,
+                    "cache_hit_per_1m_tokens": 0.00,
+                    "output_per_1m_tokens": 2.00
                 }
             }
         ]
@@ -732,21 +807,23 @@ impl McpServer {
                             "properties": {
                                 "model": {
                                     "type": "string",
-                                    "enum": ["deepseek-chat", "deepseek-reasoner"],
+                                    "enum": ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"],
                                     "description": "Model to use"
                                 },
                                 "messages": {
                                     "type": "array",
+                                    "description": "Array of message objects with role and content",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "role": {"type": "string", "enum": ["user", "assistant", "system"]},
                                             "content": {"type": "string"}
-                                        }
+                                        },
+                                        "required": ["role", "content"]
                                     }
                                 },
-                                "max_tokens": {"type": "integer", "default": 4096},
-                                "temperature": {"type": "number", "default": 0.7}
+                                "max_tokens": {"type": "integer", "default": 4096, "description": "Maximum tokens in response"},
+                                "temperature": {"type": "number", "default": 0.7, "description": "Sampling temperature (0-2)"}
                             },
                             "required": ["model", "messages"]
                         }),
@@ -843,59 +920,58 @@ impl McpServer {
                             });
                         }
 
-                        if let Ok(mut cb) = self.usage_tracker.lock() {
-                            let result = cb.circuit_breaker_mut().call(|| {
-                                // In a full implementation, this would call the DeepSeek API
-                                // For now, return the model catalog info as reference
-                                Ok(json!({
-                                    "model": args.get("model").and_then(|m| m.as_str()).unwrap_or("deepseek-chat"),
-                                    "usage": {
-                                        "prompt_tokens": 0,
-                                        "completion_tokens": 0,
-                                        "total_tokens": 0
-                                    }
-                                }))
-                            });
+                        let model = args
+                            .get("model")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("deepseek-chat")
+                            .to_string();
 
-                            match result {
-                                Ok(data) => {
-                                    if let Ok(mut tracker) = self.usage_tracker.lock() {
-                                        tracker.record_request(100, 200, false);
-                                    }
-                                    Some(JsonRpcResponse {
-                                        jsonrpc: "2.0".to_string(),
-                                        id,
-                                        result: Some(json!({
-                                            "content": [{
-                                                "type": "text",
-                                                "text": serde_json::to_string_pretty(&data).unwrap()
-                                            }]
-                                        })),
-                                        error: None,
-                                    })
+                        let messages = args
+                            .get("messages")
+                            .and_then(|m| m.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+
+                        let max_tokens = args
+                            .get("max_tokens")
+                            .and_then(|m| m.as_u64())
+                            .unwrap_or(4096);
+
+                        let temperature = args
+                            .get("temperature")
+                            .and_then(|t| t.as_f64())
+                            .unwrap_or(0.7);
+
+                        // Make the actual API call
+                        let result = self.call_deepseek_api(&model, &messages, max_tokens as u32, temperature as f32);
+
+                        match result {
+                            Ok(response_text) => {
+                                if let Ok(mut tracker) = self.usage_tracker.lock() {
+                                    tracker.record_request(100, 200, false);
                                 }
-                                Err(e) => Some(JsonRpcResponse {
+                                Some(JsonRpcResponse {
                                     jsonrpc: "2.0".to_string(),
                                     id,
-                                    result: None,
-                                    error: Some(JsonRpcError {
-                                        code: -32000,
-                                        message: e,
-                                        data: None,
-                                    }),
-                                }),
+                                    result: Some(json!({
+                                        "content": [{
+                                            "type": "text",
+                                            "text": response_text
+                                        }]
+                                    })),
+                                    error: None,
+                                })
                             }
-                        } else {
-                            Some(JsonRpcResponse {
+                            Err(e) => Some(JsonRpcResponse {
                                 jsonrpc: "2.0".to_string(),
                                 id,
                                 result: None,
                                 error: Some(JsonRpcError {
                                     code: -32000,
-                                    message: "Internal error".to_string(),
+                                    message: e,
                                     data: None,
                                 }),
-                            })
+                            }),
                         }
                     }
 
@@ -1044,6 +1120,66 @@ impl McpServer {
             }
         }
     }
+
+    /// Make an actual DeepSeek API chat completion call
+    fn call_deepseek_api(
+        &self,
+        model: &str,
+        messages: &[serde_json::Value],
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Result<String, String> {
+        let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| "DEEPSEEK_API_KEY not set".to_string())?;
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        let request_body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": false,
+        });
+
+        let response = client
+            .post("https://api.deepseek.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            return Err(format!("DeepSeek API error ({}): {}", status, body));
+        }
+
+        let result: serde_json::Value = response
+            .json()
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        // Format the response nicely
+        let content = result["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("No content in response");
+
+        let usage = &result["usage"];
+        let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
+        let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+
+        Ok(format!(
+            "{}
+
+---
+*Tokens: {} prompt + {} completion | Model: {}*",
+            content, prompt_tokens, completion_tokens, model
+        ))
+    }
+
 }
 
 impl Default for McpServer {
