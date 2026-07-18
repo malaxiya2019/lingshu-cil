@@ -1,6 +1,6 @@
 use super::{Tool, ToolOutput};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub struct ReadFileTool;
 impl Tool for ReadFileTool {
@@ -15,7 +15,7 @@ impl Tool for ReadFileTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let full_path = project_dir.join(path);
         match std::fs::read_to_string(&full_path) {
@@ -42,7 +42,7 @@ impl Tool for WriteFileTool {
             "required": ["path", "content"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let full_path = project_dir.join(path);
@@ -77,7 +77,7 @@ impl Tool for EditFileTool {
             "required": ["path", "old_string", "new_string"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
         let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
@@ -126,7 +126,7 @@ impl Tool for ListDirTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let full_path = project_dir.join(path);
 

@@ -1,6 +1,6 @@
 use super::{Tool, ToolOutput};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub struct RunShellTool;
 impl Tool for RunShellTool {
@@ -16,7 +16,7 @@ impl Tool for RunShellTool {
             "required": ["command"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
         let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("run command");
 

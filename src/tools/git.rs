@@ -1,13 +1,13 @@
 use super::{Tool, ToolOutput};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub struct GitStatusTool;
 impl Tool for GitStatusTool {
     fn name(&self) -> &str { "git_status" }
     fn description(&self) -> &str { "Show git status of the project" }
     fn input_schema(&self) -> Value { serde_json::json!({"type": "object","properties": {},"required": []}) }
-    fn execute(&self, _input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, _input: Value, project_dir: &Path) -> ToolOutput {
         exec_git(project_dir, &["status", "--short"])
     }
 }
@@ -17,12 +17,12 @@ impl Tool for GitDiffTool {
     fn name(&self) -> &str { "git_diff" }
     fn description(&self) -> &str { "Show git diff (unstaged changes)" }
     fn input_schema(&self) -> Value { serde_json::json!({"type": "object","properties": {},"required": []}) }
-    fn execute(&self, _input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, _input: Value, project_dir: &Path) -> ToolOutput {
         exec_git(project_dir, &["diff", "--no-color"])
     }
 }
 
-fn exec_git(project_dir: &PathBuf, args: &[&str]) -> ToolOutput {
+fn exec_git(project_dir: &Path, args: &[&str]) -> ToolOutput {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(project_dir)

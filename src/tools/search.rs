@@ -1,6 +1,6 @@
 use super::{Tool, ToolOutput};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub struct SearchCodeTool;
 impl Tool for SearchCodeTool {
@@ -16,13 +16,13 @@ impl Tool for SearchCodeTool {
             "required": ["pattern"]
         })
     }
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput {
         let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
         let file_pattern = input.get("file_pattern").and_then(|v| v.as_str()).unwrap_or("");
 
         let mut cmd = vec!["grep", "-rn", "--binary-files=without-match"];
         if !file_pattern.is_empty() {
-            cmd.extend_from_slice(&["--include", &file_pattern]);
+            cmd.extend_from_slice(&["--include", file_pattern]);
         }
         cmd.push(pattern);
         cmd.push(".");

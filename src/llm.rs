@@ -97,27 +97,22 @@ pub fn chat_stream(
             if trimmed.is_empty() || trimmed.starts_with(':') { continue; }
             if trimmed == "data: [DONE]" { send_done(); return; }
             if let Some(data) = trimmed.strip_prefix("data: ") {
-                match serde_json::from_str::<StreamChunk>(data) {
-                    Ok(chunk) => {
-                        for choice in &chunk.choices {
-                            // Send content chunks
-                            if let Some(ref content) = choice.delta.content {
-                                if !content.is_empty() {
-                                    if tx.send(StreamEvent::Chunk(content.clone())).is_err() { return; }
-                                }
-                            }
-                            // Send tool call deltas
-                            if let Some(ref tcs) = choice.delta.tool_calls {
-                                for tc in tcs {
-                                    if tx.send(StreamEvent::ToolCallDelta(tc.clone())).is_err() { return; }
-                                }
-                            }
-                            if choice.finish_reason.is_some() {
-                                send_done(); return;
+                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    for choice in &chunk.choices {
+                        // Send content chunks
+                        if let Some(ref content) = choice.delta.content {
+                            if !content.is_empty() && tx.send(StreamEvent::Chunk(content.clone())).is_err() { return; }
+                        }
+                        // Send tool call deltas
+                        if let Some(ref tcs) = choice.delta.tool_calls {
+                            for tc in tcs {
+                                if tx.send(StreamEvent::ToolCallDelta(tc.clone())).is_err() { return; }
                             }
                         }
+                        if choice.finish_reason.is_some() {
+                            send_done(); return;
+                        }
                     }
-                    Err(_) => {} // skip parse errors
                 }
             }
         }

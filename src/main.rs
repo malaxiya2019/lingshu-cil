@@ -8,6 +8,7 @@ mod model;
 mod session;
 mod task;
 mod tools;
+mod verifier;
 
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
@@ -51,18 +52,15 @@ fn main() -> Result<()> {
 
     let mut cil = CilRuntime::new(workspace)?;
 
-    // Welcome message
     println!("╔══════════════════════════════════════════╗");
     println!("║    LingShu CIL v{} — AI Coding Assistant  ║", env!("CARGO_PKG_VERSION"));
     println!("║    Type /help for commands               ║");
     println!("║    Type /exit to quit                    ║");
     println!("╚══════════════════════════════════════════╝");
-    println!();
     println!(" Project: {}", cil.project_dir.display());
     println!(" Model: {}", cil.model.name);
     println!();
 
-    // REPL loop
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -74,25 +72,16 @@ fn main() -> Result<()> {
         match stdin.lock().read_line(&mut input) {
             Ok(0) => break,
             Ok(_) => {}
-            Err(e) => {
-                eprintln!("Input error: {}", e);
-                break;
-            }
+            Err(e) => { eprintln!("Input error: {}", e); break; }
         }
 
         let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
+        if input.is_empty() { continue; }
 
         let cmd = CodingCommand::parse(input);
         match cmd.execute(&mut cil) {
-            Ok(output) => {
-                println!("{}", output);
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-            }
+            Ok(output) => println!("{}", output),
+            Err(e) => eprintln!("Error: {}", e),
         }
     }
 

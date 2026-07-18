@@ -87,14 +87,6 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub call_id: String,
-    pub name: String,
-    pub output: String,
-    pub is_error: bool,
-}
-
 // ── LLM Message ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,8 +162,6 @@ pub struct Delta {
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
     pub tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
@@ -181,6 +171,7 @@ pub struct DeltaToolCall {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
+#[allow(dead_code)]
     pub r#type: Option<String>,
     #[serde(default)]
     pub function: Option<DeltaFunction>,
@@ -194,7 +185,7 @@ pub struct DeltaFunction {
     pub arguments: Option<String>,
 }
 
-// ── Permission Mode (for autonomous execution) ──
+// ── Permission Mode ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PermissionMode {
@@ -213,14 +204,4 @@ impl fmt::Display for PermissionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
-}
-
-// ── Session (coding session, not chat) ──
-
-#[derive(Debug)]
-pub struct Session {
-    pub project_dir: std::path::PathBuf,
-    pub tasks: Vec<Task>,
-    pub model: ModelConfig,
-    pub mode: PermissionMode,
 }

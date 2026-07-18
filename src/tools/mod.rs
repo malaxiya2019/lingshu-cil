@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub mod file;
 pub mod shell;
@@ -12,12 +12,14 @@ pub trait Tool {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn input_schema(&self) -> Value;
-    fn execute(&self, input: Value, project_dir: &PathBuf) -> ToolOutput;
+    fn execute(&self, input: Value, project_dir: &Path) -> ToolOutput;
 }
 
+/// Output from a tool execution
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub output: String,
+    #[allow(dead_code)]
     pub is_error: bool,
 }
 
@@ -42,16 +44,17 @@ impl ToolRegistry {
         Self { tools }
     }
 
+    #[allow(dead_code)]
     pub fn all(&self) -> &[Box<dyn Tool + Send + Sync>] {
         &self.tools
     }
 
-    pub fn find(&self, name: &str) -> Option<&Box<dyn Tool + Send + Sync>> {
-        self.tools.iter().find(|t| t.name() == name)
+    pub fn find(&self, name: &str) -> Option<&(dyn Tool + Send + Sync)> {
+        self.tools.iter().find(|t| t.name() == name).map(|v| &**v)
     }
 
     /// Execute a tool by name with the given JSON input
-    pub fn execute(&self, name: &str, input: Value, project_dir: &PathBuf) -> ToolOutput {
+    pub fn execute(&self, name: &str, input: Value, project_dir: &Path) -> ToolOutput {
         match self.find(name) {
             Some(tool) => tool.execute(input, project_dir),
             None => ToolOutput {
@@ -61,7 +64,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Convert all tools to LLM tool definitions (for model.rs ToolDefinition compat)
+    /// Convert all tools to LLM tool definitions
     pub fn to_definitions(&self) -> Vec<crate::model::ToolDefinition> {
         self.tools
             .iter()

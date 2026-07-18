@@ -1,13 +1,13 @@
 use super::{Tool, ToolOutput};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::Path;
 
 pub struct DiagnoseTool;
 impl Tool for DiagnoseTool {
     fn name(&self) -> &str { "diagnose" }
     fn description(&self) -> &str { "Run cargo check and report compilation errors" }
     fn input_schema(&self) -> Value { serde_json::json!({"type": "object","properties": {},"required": []}) }
-    fn execute(&self, _input: Value, project_dir: &PathBuf) -> ToolOutput {
+    fn execute(&self, _input: Value, project_dir: &Path) -> ToolOutput {
         let output = std::process::Command::new("cargo")
             .args(["check", "--color", "never"])
             .current_dir(project_dir)
