@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 mod agent;
 mod cmds;
 mod context;
@@ -9,6 +10,9 @@ mod session;
 mod task;
 mod tools;
 mod verifier;
+mod patch;
+mod checkpoint;
+mod context_selector;
 
 use anyhow::Result;
 use std::io::{self, BufRead, Write};

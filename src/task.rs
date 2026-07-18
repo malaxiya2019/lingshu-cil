@@ -1,6 +1,16 @@
 use crate::model::Task;
 use serde::{Deserialize, Serialize};
 
+/// A single step in the execution history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionStep {
+    pub step: usize,
+    pub tool: String,
+    pub input: String,
+    pub output: String,
+    pub timestamp: String,
+}
+
 /// A saved task record for session persistence
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -12,8 +22,12 @@ pub struct TaskRecord {
     pub tools_used: Vec<String>,
     pub files_changed: Vec<String>,
     pub last_action: String,
+    pub execution_history: Vec<ExecutionStep>,
+    pub checkpoint_id: String,
+    pub patch_id: String,
 }
 
+#[allow(dead_code)]
 impl TaskRecord {
     pub fn from_task(task: &Task, project: &str) -> Self {
         Self {
@@ -25,6 +39,9 @@ impl TaskRecord {
             tools_used: Vec::new(),
             files_changed: Vec::new(),
             last_action: chrono::Utc::now().format("%H:%M:%S").to_string(),
+            execution_history: Vec::new(),
+            checkpoint_id: String::new(),
+            patch_id: String::new(),
         }
     }
 
@@ -39,6 +56,41 @@ impl TaskRecord {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(&path, &json).map_err(|e| e.to_string())?;
         Ok(path.display().to_string())
+    }
+
+    /// Add an execution step to the history
+    pub fn add_step(&mut self, tool: &str, input: &str, output: &str) {
+        let step = ExecutionStep {
+            step: self.execution_history.len() + 1,
+            tool: tool.to_string(),
+            input: input.to_string(),
+            output: if output.len() > 200 { format!("{}... (truncated)", &output[..200]) } else { output.to_string() },
+            timestamp: chrono::Utc::now().format("%H:%M:%S").to_string(),
+        };
+        self.last_action = step.timestamp.clone();
+        self.execution_history.push(step);
+    }
+
+    /// Check if the task record has execution history
+    pub fn has_history(&self) -> bool {
+        !self.execution_history.is_empty()
+    }
+
+    /// Get a summary of the execution history
+    pub fn history_summary(&self) -> String {
+        if self.execution_history.is_empty() {
+            return "No execution history.".to_string();
+        }
+        let mut result = format!("Execution History ({} steps):
+", self.execution_history.len());
+        for step in &self.execution_history {
+            result.push_str(&format!(
+                "  {}. [{}] {} - {}
+",
+                step.step, step.timestamp, step.tool, step.input
+            ));
+        }
+        result
     }
 
     /// Load a task record by id

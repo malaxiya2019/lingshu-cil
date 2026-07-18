@@ -23,6 +23,9 @@ pub enum CodingCommand {
     Fix(String),
     Commit(String),
     Status,
+    Diff,
+    Apply,
+    Rollback,
     Exit,
     Invalid(String),
 }
@@ -64,6 +67,9 @@ impl CodingCommand {
             "fix" => CodingCommand::Fix(arg.to_string()),
             "commit" | "cm" => CodingCommand::Commit(arg.to_string()),
             "status" | "st" => CodingCommand::Status,
+            "diff" | "di" | "review" => CodingCommand::Diff,
+            "apply" | "ap" => CodingCommand::Apply,
+            "rollback" | "rb" | "undo" => CodingCommand::Rollback,
             "exit" | "quit" | "q" => CodingCommand::Exit,
             _ => CodingCommand::Invalid(format!("Unknown command: /{}", cmd)),
         }
@@ -89,6 +95,9 @@ impl CodingCommand {
             CodingCommand::Fix(query) => cil.cmd_fix(&query),
             CodingCommand::Commit(msg) => cil.cmd_commit(&msg),
             CodingCommand::Status => cil.cmd_status(),
+            CodingCommand::Diff => cil.cmd_diff(),
+            CodingCommand::Apply => cil.cmd_apply(),
+            CodingCommand::Rollback => cil.cmd_rollback(),
             CodingCommand::Exit => { cil.should_exit = true; Ok("Bye!".to_string()) }
             CodingCommand::Invalid(msg) => Ok(format!("{}\nType /help for available commands.", msg)),
         }
@@ -174,7 +183,12 @@ fn help_text() -> String {
   /fix <desc>       AI auto-fix compilation errors
   /commit <msg>     Git commit with AI message
 
- P1 — Task & Memory
+ P1 — Safe Patch Engine
+  /diff /review     Review uncommitted changes
+  /apply            Apply changes with checkpoint
+  /rollback /undo   Rollback to last checkpoint
+
+ P2 — Task & Memory
   /task <desc>      Create/manage coding tasks
   /memory <k=v>     Store/recall context
 
@@ -318,6 +332,26 @@ mod tests {
     #[test]
     fn test_parse_fix() {
         assert!(matches!(CodingCommand::parse("/fix error"), CodingCommand::Fix(_)));
+    }
+
+    #[test]
+    fn test_parse_diff() {
+        assert!(matches!(CodingCommand::parse("/diff"), CodingCommand::Diff));
+        assert!(matches!(CodingCommand::parse("/di"), CodingCommand::Diff));
+        assert!(matches!(CodingCommand::parse("/review"), CodingCommand::Diff));
+    }
+
+    #[test]
+    fn test_parse_apply() {
+        assert!(matches!(CodingCommand::parse("/apply"), CodingCommand::Apply));
+        assert!(matches!(CodingCommand::parse("/ap"), CodingCommand::Apply));
+    }
+
+    #[test]
+    fn test_parse_rollback() {
+        assert!(matches!(CodingCommand::parse("/rollback"), CodingCommand::Rollback));
+        assert!(matches!(CodingCommand::parse("/rb"), CodingCommand::Rollback));
+        assert!(matches!(CodingCommand::parse("/undo"), CodingCommand::Rollback));
     }
 
     #[test]

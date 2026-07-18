@@ -1,7 +1,11 @@
+use crate::checkpoint::CheckpointManager;
 use crate::context::ContextEngine;
+use crate::context_selector::ContextSelector;
 use crate::llm;
 use crate::model::{LlmMessage, ModelConfig, PermissionMode, Task, TaskStatus, ToolCall};
+use crate::patch::PatchEngine;
 use crate::tools::ToolRegistry;
+use crate::verifier::Verifier;
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -10,9 +14,11 @@ use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 /// CIL Runtime — the core coding agent loop
+#[allow(dead_code)]
 pub struct CilRuntime {
     pub project_dir: PathBuf,
     pub context: ContextEngine,
+    pub context_selector: ContextSelector,
     pub model: ModelConfig,
     pub mode: PermissionMode,
     pub should_exit: bool,
@@ -20,6 +26,11 @@ pub struct CilRuntime {
     pub memory: HashMap<String, String>,
     pub log_path: String,
     pub tool_registry: ToolRegistry,
+    pub patch_engine: PatchEngine,
+    pub checkpoint_manager: CheckpointManager,
+    pub verifier: Verifier,
+    pub current_checkpoint: Option<crate::checkpoint::Checkpoint>,
+    pub current_patch: Option<crate::patch::PatchSet>,
 }
 
 impl CilRuntime {
@@ -36,8 +47,9 @@ impl CilRuntime {
         let _ = context.scan_workspace();
 
         Ok(Self {
-            project_dir: workspace,
+            project_dir: workspace.clone(),
             context,
+            context_selector: ContextSelector::new(workspace.clone()),
             model: ModelConfig::builtins().into_iter().find(|m| m.name == "deepseek-coder")
                 .unwrap_or_else(|| ModelConfig::builtins()[0].clone()),
             mode: PermissionMode::Normal,
@@ -46,6 +58,11 @@ impl CilRuntime {
             memory: HashMap::new(),
             log_path: log_path.display().to_string(),
             tool_registry: ToolRegistry::new(),
+            patch_engine: PatchEngine::new(workspace.clone()),
+            checkpoint_manager: CheckpointManager::new(workspace),
+            verifier: Verifier::new(),
+            current_checkpoint: None,
+            current_patch: None,
         })
     }
 
@@ -332,10 +349,56 @@ impl CilRuntime {
         let ctx = self.context.scan_workspace().ok();
         let ctx_info = ctx.as_ref().map(|c| format!("{} files, {} lines", c.files.len(), c.total_lines))
             .unwrap_or_else(|| "not scanned".to_string());
+        let has_checkpoint = if self.current_checkpoint.is_some() { "active" } else { "none" };
         Ok(format!(
-            "LingShu CIL\n             Model: {}\n             Mode: {}\n             Project: {}\n             Context: {}\n             Tasks: {}\n             Log: {}",
-            self.model.name, self.mode, self.project_dir.display(), ctx_info, self.tasks.len(), self.log_path
+            "LingShu CIL\n             Model: {}\n             Mode: {}\n             Project: {}\n             Context: {}\n             Tasks: {}\n             Checkpoint: {}\n             Log: {}",
+            self.model.name, self.mode, self.project_dir.display(), ctx_info, self.tasks.len(), has_checkpoint, self.log_path
         ))
+    }
+
+    pub fn cmd_diff(&self) -> Result<String> {
+        match self.patch_engine.review_diff() {
+            Ok(review) => Ok(review),
+            Err(e) => Ok(format!("Diff error: {}", e)),
+        }
+    }
+
+    pub fn cmd_apply(&mut self) -> Result<String> {
+        // Create checkpoint first
+        let task_id = format!("apply_{}", chrono::Utc::now().timestamp());
+        match self.checkpoint_manager.create_checkpoint(&task_id, "manual apply") {
+            Ok(ck) => {
+                self.current_checkpoint = Some(ck);
+                println!("[Checkpoint created]");
+            }
+            Err(e) => eprintln!("[Checkpoint warning: {}]", e),
+        }
+
+        // Generate patch from workspace
+        match self.patch_engine.generate_workspace_patch() {
+            Ok(patch) => {
+                self.current_patch = Some(patch.clone());
+                let summary = patch.summary();
+                Ok(format!("Patch applied:\n{}", summary))
+            }
+            Err(e) => Ok(format!("No changes to apply: {}", e)),
+        }
+    }
+
+    pub fn cmd_rollback(&mut self) -> Result<String> {
+        match &self.current_checkpoint {
+            Some(ck) => {
+                match self.checkpoint_manager.rollback(ck) {
+                    Ok(msg) => {
+                        self.current_checkpoint = None;
+                        self.current_patch = None;
+                        Ok(msg)
+                    }
+                    Err(e) => Ok(format!("Rollback failed: {}", e)),
+                }
+            }
+            None => Ok("No checkpoint to rollback to. Use /apply first or run a task.".to_string()),
+        }
     }
 
     // ── AI Helpers ──
@@ -347,7 +410,15 @@ impl CilRuntime {
     }
 
     /// Run an AI-powered coding task with full agent loop (LLM → Tool → LLM loop)
+    /// Creates a git checkpoint before making changes, supports rollback.
     pub fn run_ai_task(&mut self, task_description: &str, verifier: Option<&crate::verifier::Verifier>) -> Result<String> {
+        // Create git checkpoint before starting
+        let task_id = format!("rt_{}", chrono::Utc::now().timestamp());
+        if self.checkpoint_manager.is_git_repo() {
+            if let Ok(ck) = self.checkpoint_manager.create_checkpoint(&task_id, task_description) {
+                self.current_checkpoint = Some(ck);
+            }
+        }
         let ctx = self.context.scan_workspace().ok();
         let ctx_summary = ctx.as_ref().map(|c| c.summary.clone()).unwrap_or_default();
         let tools = self.tool_registry.to_definitions();
