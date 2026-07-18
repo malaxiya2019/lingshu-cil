@@ -19,9 +19,18 @@ impl Verifier {
     pub fn verify(&self, project_dir: &Path) -> VerifyResult {
         let mut errors = Vec::new();
 
-        // Step 1: cargo check
+        // Step 1: cargo check (use cargo-watch if available)
+        let check_args: &[&str] = if Command::new("cargo")
+            .args(["watch", "--help"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        { &["watch", "-x", "check", "--no-color"] }
+        else { &["check", "--color", "never"] };
         match Command::new("cargo")
-            .args(["check", "--color", "never"])
+            .args(check_args)
             .current_dir(project_dir)
             .output()
         {

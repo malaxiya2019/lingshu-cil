@@ -160,7 +160,12 @@ impl CilRuntime {
     }
 
     pub fn cmd_cargo(&self, args: &str) -> Result<String> {
-        let cargo_args: Vec<&str> = if args.is_empty() { vec!["check"] } else { args.split_whitespace().collect() };
+        // Use cargo-watch for auto-rechecking when available
+        let cargo_args: Vec<&str> = if args.is_empty() {
+            if Self::has_cargo_watch() { vec!["watch", "-x", "check"] } else { vec!["check"] }
+        } else {
+            args.split_whitespace().collect()
+        };
         let output = Command::new("cargo").args(&cargo_args).current_dir(&self.project_dir).output();
         match output {
             Ok(out) => {
@@ -235,9 +240,25 @@ impl CilRuntime {
         Ok(format!("Task added: {}", args))
     }
 
+    /// Check if cargo-watch is installed
+    fn has_cargo_watch() -> bool {
+        std::process::Command::new("cargo")
+            .args(["watch", "--help"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
     pub fn cmd_diagnose(&self) -> Result<String> {
+        let check_args: Vec<&str> = if Self::has_cargo_watch() {
+            vec!["watch", "-x", "check", "--no-color"]
+        } else {
+            vec!["check", "--color", "never"]
+        };
         let output = Command::new("cargo")
-            .args(["check", "--color", "never"])
+            .args(&check_args)
             .current_dir(&self.project_dir)
             .output();
         match output {
@@ -259,7 +280,7 @@ impl CilRuntime {
         if query.is_empty() {
             return Ok("Usage: /fix <description of what to fix>".to_string());
         }
-        let diag = Command::new("cargo").args(["check", "--color", "never"]).current_dir(&self.project_dir).output();
+        let diag = Command::new("cargo").args(if Self::has_cargo_watch() { vec!["watch", "-x", "check", "--no-color"] } else { vec!["check", "--color", "never"] }).current_dir(&self.project_dir).output();
         let errors = match diag {
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);

@@ -8,8 +8,18 @@ impl Tool for DiagnoseTool {
     fn description(&self) -> &str { "Run cargo check and report compilation errors" }
     fn input_schema(&self) -> Value { serde_json::json!({"type": "object","properties": {},"required": []}) }
     fn execute(&self, _input: Value, project_dir: &Path) -> ToolOutput {
+        // Use cargo-watch for auto-rechecking if available
+        let check_args: &[&str] = if std::process::Command::new("cargo")
+            .args(["watch", "--help"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        { &["watch", "-x", "check", "--no-color"] }
+        else { &["check", "--color", "never"] };
         let output = std::process::Command::new("cargo")
-            .args(["check", "--color", "never"])
+            .args(check_args)
             .current_dir(project_dir)
             .output();
 

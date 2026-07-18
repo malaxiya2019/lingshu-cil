@@ -1,0 +1,13 @@
+[alias]
+# Use cargo-watch for auto-rechecking
+# Run: cargo wc  (instead of cargo check)
+wc = "watch -x check"
+wt = "watch -x test"
+wct = "watch -x check -x test"
+
+# Quick aliases
+c = "check"
+t = "test"
+r = "run"
+b = "build"
+cl = "clippy"
