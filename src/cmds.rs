@@ -1,7 +1,8 @@
-use crate::cil::CilRuntime;
+use crate::agent::CilRuntime;
 use anyhow::Result;
 
 /// Coding commands for LingShu CIL
+/// Parses user input and delegates to CilRuntime tools
 #[derive(Debug)]
 pub enum CodingCommand {
     Help,
@@ -32,7 +33,7 @@ impl CodingCommand {
             return CodingCommand::Invalid(input.to_string());
         }
 
-        let rest = &input[1..]; // remove '/'
+        let rest = &input[1..];
         let parts: Vec<&str> = rest.splitn(2, |c: char| c.is_whitespace()).collect();
         let cmd = parts[0].to_lowercase();
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
@@ -43,8 +44,6 @@ impl CodingCommand {
             "open" | "o" => CodingCommand::Open(arg.to_string()),
             "search" | "s" | "grep" => CodingCommand::Search(arg.to_string()),
             "edit" | "e" => {
-                // Format: /edit <path> <old> ---NEW--- <new>
-                // Or: /edit <path> ---OLD--- <old> ---NEW--- <new>
                 let parts: Vec<&str> = arg.splitn(5, |c| c == '\n').collect();
                 if parts.len() >= 3 {
                     CodingCommand::Edit {
@@ -73,6 +72,7 @@ impl CodingCommand {
     }
 
     /// Execute the command and return output
+    /// Only parses commands — delegates all logic to CilRuntime
     pub fn execute(self, cil: &mut CilRuntime) -> Result<String> {
         match self {
             CodingCommand::Help => Ok(help_text()),
@@ -92,36 +92,36 @@ impl CodingCommand {
             CodingCommand::Commit(msg) => cil.cmd_commit(&msg),
             CodingCommand::Status => cil.cmd_status(),
             CodingCommand::Exit => { cil.should_exit = true; Ok("Bye!".to_string()) }
-            CodingCommand::Invalid(msg) => Ok(format!("❌ {}\nType /help for available commands.", msg)),
+            CodingCommand::Invalid(msg) => Ok(format!("{}\nType /help for available commands.", msg)),
         }
     }
 }
 
 fn help_text() -> String {
-    r#"╔══════════════════════════════════════════════╗
-║       LingShu CIL — AI Coding Assistant       ║
-╠════════════════════════════════════════════════╣
-║ P0 — Core Coding Tools                         ║
-║  /project <dir>   Set project directory         ║
-║  /open <file>     Open/read a file              ║
-║  /search <pat>    Search code in project        ║
-║  /edit <p> <o>+++<n>  Edit file (search-replace)║
-║  /explain <q>     Explain code/ask AI           ║
-║  /run <cmd>       Run a command (output only)   ║
-║  /shell <cmd>     Interactive shell command     ║
-║  /cargo <args>    Run cargo commands             ║
-║  /git <args>      Run git commands               ║
-║  /diagnose        Run cargo check diagnostics    ║
-║  /fix <desc>      AI auto-fix compilation errors ║
-║  /commit <msg>    Git commit with AI message     ║
-╠════════════════════════════════════════════════╣
-║ P1 — Task & Memory                             ║
-║  /task <desc>     Create/manage coding tasks    ║
-║  /memory <key=val>  Store/recall context        ║
-╠════════════════════════════════════════════════╣
-║ System                                          ║
-║  /status          Show current state            ║
-║  /help            Show this help                ║
-║  /exit /quit      Exit CIL                      ║
-╚════════════════════════════════════════════════╝"#.to_string()
+    r#"
+       LingShu CIL — AI Coding Assistant
+
+ P0 — Core Coding Tools
+  /project <dir>   Set project directory
+  /open <file>     Open/read a file
+  /search <pat>    Search code in project
+  /edit <p> <o> <n>  Edit file (search-replace)
+  /explain <q>     Explain code/ask AI
+  /run <cmd>       Run a command (output only)
+  /shell <cmd>     Interactive shell command
+  /cargo <args>    Run cargo commands
+  /git <args>      Run git commands
+  /diagnose        Run cargo check diagnostics
+  /fix <desc>      AI auto-fix compilation errors
+  /commit <msg>    Git commit with AI message
+
+ P1 — Task & Memory
+  /task <desc>     Create/manage coding tasks
+  /memory <k=v>    Store/recall context
+
+ System
+  /status          Show current state
+  /help            Show this help
+  /exit /quit      Exit CIL
+"#.to_string()
 }

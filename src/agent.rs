@@ -2,7 +2,7 @@ use crate::context::ContextEngine;
 use crate::llm;
 use crate::logging::Logger;
 use crate::model::{LlmMessage, ModelConfig, PermissionMode, Task, TaskStatus, ToolCall};
-use crate::tools;
+use crate::tools::ToolRegistry;
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -21,6 +21,7 @@ pub struct CilRuntime {
     pub tasks: Vec<Task>,
     pub memory: HashMap<String, String>,
     pub log_path: String,
+    pub tool_registry: ToolRegistry,
 }
 
 impl CilRuntime {
@@ -41,10 +42,11 @@ impl CilRuntime {
             tasks: Vec::new(),
             memory: HashMap::new(),
             log_path,
+            tool_registry: ToolRegistry::new(),
         })
     }
 
-    // ── Command Implementations ──
+    // ── Project commands ──
 
     pub fn cmd_project(&mut self, path: &str) -> Result<String> {
         let target = if path.is_empty() {
@@ -57,11 +59,11 @@ impl CilRuntime {
             self.project_dir = target.clone();
             self.context.set_workspace(target.clone());
             match self.context.scan_workspace() {
-                Ok(ctx) => Ok(format!("✅ Project: {}\n   {} files, {} lines", target.display(), ctx.files.len(), ctx.total_lines)),
-                Err(e) => Ok(format!("✅ Project: {} (scan: {})", target.display(), e)),
+                Ok(ctx) => Ok(format!("Project: {}\n   {} files, {} lines", target.display(), ctx.files.len(), ctx.total_lines)),
+                Err(e) => Ok(format!("Project: {} (scan: {})", target.display(), e)),
             }
         } else {
-            Ok(format!("❌ Directory not found: {}", target.display()))
+            Ok(format!("Directory not found: {}", target.display()))
         }
     }
 
@@ -73,9 +75,9 @@ impl CilRuntime {
                 let preview: String = if lines.len() > 100 {
                     lines[..100].join("\n") + &format!("\n... ({} more lines)", lines.len() - 100)
                 } else { content.clone() };
-                Ok(format!("📄 {} ({} lines)\n\n{}", path, lines.len(), preview))
+                Ok(format!("{} ({} lines)\n\n{}", path, lines.len(), preview))
             }
-            Err(e) => Ok(format!("❌ Cannot open {}: {}", path, e)),
+            Err(e) => Ok(format!("Cannot open {}: {}", path, e)),
         }
     }
 
@@ -88,32 +90,32 @@ impl CilRuntime {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 if stdout.is_empty() {
-                    Ok(format!("🔍 No matches for `{}`", pattern))
+                    Ok(format!("No matches for `{}`", pattern))
                 } else {
                     let count = stdout.lines().count();
-                    Ok(format!("🔍 {} matches for `{}`:\n\n{}", count, pattern, stdout))
+                    Ok(format!("{} matches for `{}`:\n\n{}", count, pattern, stdout))
                 }
             }
-            Err(e) => Ok(format!("❌ Search error: {}", e)),
+            Err(e) => Ok(format!("Search error: {}", e)),
         }
     }
 
     pub fn cmd_edit(&self, path: &str, old: &str, new: &str) -> Result<String> {
         let full_path = self.project_dir.join(path);
         if !full_path.exists() {
-            return Ok(format!("❌ File not found: {}", path));
+            return Ok(format!("File not found: {}", path));
         }
         let content = match std::fs::read_to_string(&full_path) {
             Ok(c) => c,
-            Err(e) => return Ok(format!("❌ Read error: {}", e)),
+            Err(e) => return Ok(format!("Read error: {}", e)),
         };
         if !content.contains(old) {
-            return Ok(format!("❌ Could not find specified text in {}", path));
+            return Ok(format!("Could not find specified text in {}", path));
         }
         let new_content = content.replace(old, new);
         match std::fs::write(&full_path, &new_content) {
-            Ok(_) => Ok(format!("✅ Edited {}", path)),
-            Err(e) => Ok(format!("❌ Write error: {}", e)),
+            Ok(_) => Ok(format!("Edited {}", path)),
+            Err(e) => Ok(format!("Write error: {}", e)),
         }
     }
 
@@ -121,7 +123,6 @@ impl CilRuntime {
         if query.is_empty() {
             return Ok("Usage: /explain <question about code>".to_string());
         }
-        // Use LLM to explain
         let ctx = self.context.scan_workspace().ok();
         let ctx_summary = ctx.as_ref().map(|c| c.summary.clone()).unwrap_or_default();
         let messages = vec![
@@ -131,7 +132,7 @@ impl CilRuntime {
 
         match self.stream_to_string(&messages) {
             Ok(response) => Ok(response),
-            Err(e) => Ok(format!("⚠️ LLM error: {}\n\nFalling back to shell: let me check...", e)),
+            Err(e) => Ok(format!("LLM error: {}\n\nFalling back to shell.", e)),
         }
     }
 
@@ -146,9 +147,9 @@ impl CilRuntime {
                 if !stdout.is_empty() { result.push_str(&stdout); }
                 if !stderr.is_empty() { result.push_str(&stderr); }
                 if result.len() > 10000 { result.truncate(10000); result.push_str("\n... (truncated)"); }
-                Ok(if result.is_empty() { format!("✅ Command completed (exit={})", out.status.code().unwrap_or(-1)) } else { result })
+                Ok(if result.is_empty() { format!("Command completed (exit={})", out.status.code().unwrap_or(-1)) } else { result })
             }
-            Err(e) => Ok(format!("❌ Error: {}", e)),
+            Err(e) => Ok(format!("Error: {}", e)),
         }
     }
 
@@ -166,13 +167,13 @@ impl CilRuntime {
                 let mut result = stdout.to_string();
                 if !stderr.is_empty() { result.push_str(&stderr); }
                 if out.status.success() {
-                    result.push_str("\n✅ Cargo succeeded.");
+                    result.push_str("\nCargo succeeded.");
                 } else {
-                    result.push_str("\n❌ Cargo failed.");
+                    result.push_str("\nCargo failed.");
                 }
                 Ok(result)
             }
-            Err(e) => Ok(format!("❌ Cargo error: {}", e)),
+            Err(e) => Ok(format!("Cargo error: {}", e)),
         }
     }
 
@@ -187,16 +188,16 @@ impl CilRuntime {
                 if !stderr.is_empty() { result.push_str(&stderr); }
                 Ok(result)
             }
-            Err(e) => Ok(format!("❌ Git error: {}", e)),
+            Err(e) => Ok(format!("Git error: {}", e)),
         }
     }
 
     pub fn cmd_memory(&mut self, args: &str) -> Result<String> {
         if args.is_empty() {
             if self.memory.is_empty() {
-                return Ok("📝 Memory is empty.".to_string());
+                return Ok("Memory is empty.".to_string());
             }
-            let mut result = "📝 Memory:\n".to_string();
+            let mut result = "Memory:\n".to_string();
             for (k, v) in &self.memory {
                 result.push_str(&format!("  {} = {}\n", k, &v[..std::cmp::min(v.len(), 80)]));
             }
@@ -204,30 +205,30 @@ impl CilRuntime {
         }
         if let Some(eq_pos) = args.find('=') {
             let key = args[..eq_pos].trim();
-            let val = args[eq_pos+1..].trim();
+            let val = args[eq_pos + 1..].trim();
             self.memory.insert(key.to_string(), val.to_string());
-            Ok(format!("📝 Stored: {}", key))
+            Ok(format!("Stored: {}", key))
         } else if self.memory.contains_key(args) {
-            Ok(format!("📝 {} = {}", args, self.memory[args]))
+            Ok(format!("{} = {}", args, self.memory[args]))
         } else {
-            Ok(format!("📝 No key '{}' in memory", args))
+            Ok(format!("No key '{}' in memory", args))
         }
     }
 
     pub fn cmd_task(&mut self, args: &str) -> Result<String> {
         if args.is_empty() || args == "list" || args == "ls" {
             if self.tasks.is_empty() {
-                return Ok("📋 No tasks.".to_string());
+                return Ok("No tasks.".to_string());
             }
-            let mut result = "📋 Tasks:\n".to_string();
+            let mut result = "Tasks:\n".to_string();
             for (i, task) in self.tasks.iter().enumerate() {
-                result.push_str(&format!("  {}. [{}] {}\n", i+1, task.status, task.description));
+                result.push_str(&format!("  {}. [{}] {}\n", i + 1, task.status, task.description));
             }
             return Ok(result);
         }
         if args == "done" || args == "clear" {
             self.tasks.clear();
-            return Ok("📋 All tasks cleared.".to_string());
+            return Ok("All tasks cleared.".to_string());
         }
         let id = format!("task_{}", chrono::Utc::now().timestamp());
         let task = Task {
@@ -237,7 +238,7 @@ impl CilRuntime {
             created_at: chrono::Utc::now().format("%H:%M:%S").to_string(),
         };
         self.tasks.push(task);
-        Ok(format!("📋 Task added: {}", args))
+        Ok(format!("Task added: {}", args))
     }
 
     pub fn cmd_diagnose(&self) -> Result<String> {
@@ -250,19 +251,19 @@ impl CilRuntime {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 let mut result = String::new();
-                result.push_str("🔍 cargo check diagnostics\n");
+                result.push_str("cargo check diagnostics\n");
                 result.push_str("────────────────────────\n");
                 if !stdout.is_empty() { result.push_str(&stdout); }
                 if !stderr.is_empty() { result.push_str(&stderr); }
                 if out.status.success() {
-                    result.push_str("\n✅ No errors. Clean compilation.");
+                    result.push_str("\nNo errors. Clean compilation.");
                 } else {
                     let error_count = stderr.lines().filter(|l| l.contains("error")).count();
-                    result.push_str(&format!("\n❌ {} compilation error(s).", error_count));
+                    result.push_str(&format!("\n{} compilation error(s).", error_count));
                 }
                 Ok(result)
             }
-            Err(e) => Ok(format!("❌ Diagnose error: {}", e)),
+            Err(e) => Ok(format!("Diagnose error: {}", e)),
         }
     }
 
@@ -270,7 +271,6 @@ impl CilRuntime {
         if query.is_empty() {
             return Ok("Usage: /fix <description of what to fix>\nor: /fix (auto-detect from cargo check)".to_string());
         }
-        // Get compilation errors first
         let diag_output = Command::new("cargo")
             .args(["check", "--color", "never"])
             .current_dir(&self.project_dir)
@@ -289,20 +289,18 @@ impl CilRuntime {
 
         let ctx = self.context.scan_workspace().ok();
         let ctx_summary = ctx.as_ref().map(|c| c.summary.clone()).unwrap_or_default();
-
         let user_msg = format!(
             "I need to fix this issue: {}\n\nCompilation errors:\n{}\n\nPlease analyze and provide the fix.",
             query, errors
         );
-
         let messages = vec![
             LlmMessage::system(&format!("{} Project: {}", llm::build_system_prompt(), ctx_summary)),
             LlmMessage::user(&user_msg),
         ];
 
         match self.stream_to_string(&messages) {
-            Ok(response) => Ok(format!("🔧 Fix Analysis:\n\n{}", response)),
-            Err(e) => Ok(format!("⚠️ LLM error: {}", e)),
+            Ok(response) => Ok(format!("Fix Analysis:\n\n{}", response)),
+            Err(e) => Ok(format!("LLM error: {}", e)),
         }
     }
 
@@ -320,10 +318,9 @@ impl CilRuntime {
                     if !stderr.is_empty() { result.push_str(&stderr); }
                     Ok(result)
                 }
-                Err(e) => Ok(format!("❌ Git error: {}", e)),
+                Err(e) => Ok(format!("Git error: {}", e)),
             }
         } else {
-            // Show git diff and ask for message
             let output = Command::new("git")
                 .args(["diff", "--stat"])
                 .current_dir(&self.project_dir)
@@ -358,7 +355,7 @@ impl CilRuntime {
             .map(|c| format!("{} files, {} lines", c.files.len(), c.total_lines))
             .unwrap_or_else(|| "not scanned".to_string());
         Ok(format!(
-            "LingShu CIL\n             ├ Model: {}\n             ├ Mode: {}\n             ├ Project: {}\n             ├ Context: {}\n             ├ Tasks: {}\n             └ Log: {}",
+            "LingShu CIL\n             Model: {}\n             Mode: {}\n             Project: {}\n             Context: {}\n             Tasks: {}\n             Log: {}",
             self.model.name, self.mode, self.project_dir.display(), ctx_info, self.tasks.len(), self.log_path
         ))
     }
@@ -375,7 +372,7 @@ impl CilRuntime {
     pub fn run_ai_task(&mut self, task_description: &str) -> Result<String> {
         let ctx = self.context.scan_workspace().ok();
         let ctx_summary = ctx.as_ref().map(|c| c.summary.clone()).unwrap_or_default();
-        let tools = tools::all_tools();
+        let tools = self.tool_registry.to_definitions();
 
         let mut messages = vec![
             LlmMessage::system(&format!(
@@ -385,7 +382,6 @@ impl CilRuntime {
             LlmMessage::user(task_description),
         ];
 
-        // Track the task
         let task_id = format!("task_{}", chrono::Utc::now().timestamp());
         self.tasks.push(Task {
             id: task_id.clone(),
@@ -394,14 +390,12 @@ impl CilRuntime {
             created_at: chrono::Utc::now().format("%H:%M:%S").to_string(),
         });
 
-        // Maximum tool call iterations
         for _iteration in 0..15 {
             let rx = match llm::chat_stream(&self.model, &messages, Some(&tools)) {
                 Ok(r) => r,
-                Err(e) => return Ok(format!("⚠️ LLM error: {}", e)),
+                Err(e) => return Ok(format!("LLM error: {}", e)),
             };
 
-            // Collect tool calls from stream
             let mut content = String::new();
             let mut tool_calls_map: HashMap<usize, ToolCall> = HashMap::new();
 
@@ -424,37 +418,36 @@ impl CilRuntime {
                         }
                     }
                     llm::StreamEvent::Done => break,
-                    llm::StreamEvent::Error(e) => return Ok(format!("⚠️ Error: {}", e)),
+                    llm::StreamEvent::Error(e) => return Ok(format!("Error: {}", e)),
                 }
             }
 
             let tool_calls: Vec<ToolCall> = {
                 let mut tcs: Vec<_> = tool_calls_map.into_values().collect();
-                tcs.sort_by_key(|tc| {
-                    // Extract index from id or name for deterministic ordering
-                    tc.id.as_str().len()
-                });
+                tcs.sort_by_key(|tc| tc.id.as_str().len());
                 tcs
             };
 
             messages.push(LlmMessage::assistant(&content, if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) }));
 
             if tool_calls.is_empty() {
-                // No tool calls → final answer
                 if let Some(task) = self.tasks.iter_mut().find(|t| t.id == task_id) {
                     task.status = TaskStatus::Done;
                 }
                 return Ok(content);
             }
 
-            // Execute tool calls and feed results back
             for tc in &tool_calls {
-                let result = tools::execute_tool(tc, &self.project_dir);
-                messages.push(LlmMessage::tool(&result.output, &result.call_id));
+                let result = self.tool_registry.execute(
+                    &tc.name,
+                    tc.arguments.clone(),
+                    &self.project_dir,
+                );
+                messages.push(LlmMessage::tool(&result.output, &tc.id));
             }
         }
 
-        Ok("⚠️ Max iterations reached. Task may be incomplete.".to_string())
+        Ok("Max iterations reached. Task may be incomplete.".to_string())
     }
 }
 

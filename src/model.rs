@@ -124,7 +124,7 @@ impl LlmMessage {
 
 // ── Task ──
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub description: String,
@@ -132,7 +132,7 @@ pub struct Task {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
     InProgress,
@@ -196,7 +196,7 @@ pub struct DeltaFunction {
 
 // ── Permission Mode (for autonomous execution) ──
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PermissionMode {
     Strict,
     Normal,

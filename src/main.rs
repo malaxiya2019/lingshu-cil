@@ -1,21 +1,20 @@
-#![allow(dead_code)]
-
-mod cil;
-mod commands;
+mod agent;
+mod cmds;
 mod context;
 mod llm;
 mod logging;
-mod markdown;
 mod mcp;
 mod model;
+mod session;
+mod task;
 mod tools;
 
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use cil::CilRuntime;
-use commands::CodingCommand;
+use agent::CilRuntime;
+use cmds::CodingCommand;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -59,8 +58,8 @@ fn main() -> Result<()> {
     println!("║    Type /exit to quit                    ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
-    println!("📁 Project: {}", cil.project_dir.display());
-    println!("🤖 Model: {}", cil.model.name);
+    println!(" Project: {}", cil.project_dir.display());
+    println!(" Model: {}", cil.model.name);
     println!();
 
     // REPL loop
@@ -73,7 +72,7 @@ fn main() -> Result<()> {
 
         let mut input = String::new();
         match stdin.lock().read_line(&mut input) {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
                 eprintln!("Input error: {}", e);
@@ -86,15 +85,13 @@ fn main() -> Result<()> {
             continue;
         }
 
-        // History: up/down would need termion/crossterm — keep simple for now
-
         let cmd = CodingCommand::parse(input);
         match cmd.execute(&mut cil) {
             Ok(output) => {
                 println!("{}", output);
             }
             Err(e) => {
-                eprintln!("⚠️  Error: {}", e);
+                eprintln!("Error: {}", e);
             }
         }
     }
